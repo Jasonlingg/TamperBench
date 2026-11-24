@@ -2,6 +2,7 @@
 
 import multiprocessing
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any, TypeVar
 
 import datasets
@@ -41,6 +42,12 @@ class FullParameterFinetuneConfig(TamperAttackConfig):
         max_steps: Maximum number of training steps (-1 for unlimited).
         lr_scheduler_type: The learning rate schedule used in the fine-tuning.
         optim: The optimizer used for fine-tuning.
+        weight_decay: Weight decay passed to the trainer (defaults to its existing value of zero).
+        muon_momentum: Momentum coefficient for Muon hidden-matrix updates.
+        muon_nesterov: Whether Muon uses Nesterov momentum.
+        muon_ns_steps: Number of Newton-Schulz iterations per Muon update.
+        muon_adjust_lr_fn: Muon update scaling, either ``match_rms_adamw`` or ``original``.
+        adamw_learning_rate: Auxiliary AdamW learning rate with Muon; None shares ``learning_rate``.
         warmup_steps: Number of warmup steps for the learning rate scheduler.
         warmup_ratio: Proportion of training steps used for warmup (alternative
             to ``warmup_steps``; ``warmup_steps`` takes priority if it's
@@ -66,6 +73,42 @@ class FullParameterFinetuneConfig(TamperAttackConfig):
     poison_ratio: float = 1.0
     harmful_dataset: str = "safe_rlhf_alpaca_train"
     benign_dataset: str = "bookcorpus"
+    weight_decay: float = 0.0
+    muon_momentum: float = 0.95
+    muon_nesterov: bool = True
+    muon_ns_steps: int = 5
+    muon_adjust_lr_fn: str = "match_rms_adamw"
+    adamw_learning_rate: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate Muon settings without changing existing optimizer configurations."""
+        if self.optim != "muon":
+            return
+
+        if not isfinite(self.learning_rate) or self.learning_rate <= 0:
+            raise ValueError("learning_rate must be finite and positive for Muon.")
+        if not isfinite(self.weight_decay) or self.weight_decay < 0:
+            raise ValueError("weight_decay must be finite and non-negative for Muon.")
+        if not isfinite(self.muon_momentum) or not 0 <= self.muon_momentum < 1:
+            raise ValueError("muon_momentum must be in [0, 1).")
+        if type(self.muon_nesterov) is not bool:
+            raise ValueError("muon_nesterov must be a boolean.")
+        if type(self.muon_ns_steps) is not int or self.muon_ns_steps < 1:
+            raise ValueError("muon_ns_steps must be a positive integer.")
+        if self.muon_adjust_lr_fn not in {"match_rms_adamw", "original"}:
+            raise ValueError("muon_adjust_lr_fn must be 'match_rms_adamw' or 'original'.")
+        if self.adamw_learning_rate is not None and (
+            not isfinite(self.adamw_learning_rate) or self.adamw_learning_rate <= 0
+        ):
+            raise ValueError("adamw_learning_rate must be None or finite and positive.")
+
+    def ensure_optimizer_available(self) -> None:
+        """Reject Muon training until parameter routing and trainer integration are implemented."""
+        if self.optim == "muon":
+            raise NotImplementedError(
+                "Muon configuration is available, but parameter routing and SFTTrainer integration "
+                "are not implemented yet. Use optim='adamw_torch' to train."
+            )
 
 
 @register_attack(AttackName.FULL_PARAMETER_FINETUNE, FullParameterFinetuneConfig)
@@ -77,6 +120,7 @@ class FullParameterFinetune(TamperAttack[H]):
     @override
     def run_attack(self) -> None:
         """Run full parameter fine-tuning attack and modify weights."""
+        self.attack_config.ensure_optimizer_available()
         prompt_completions_dataset = self.load_prompt_completions_dataset()
         training_arguments = SFTConfig(
             output_dir=self.attack_config.out_dir,
@@ -90,6 +134,7 @@ class FullParameterFinetune(TamperAttack[H]):
             gradient_accumulation_steps=self.attack_config.gradient_accumulation_steps,
             gradient_checkpointing=True,
             optim=self.attack_config.optim,
+            weight_decay=self.attack_config.weight_decay,
             logging_steps=1,
             save_strategy="no",
             report_to="none",

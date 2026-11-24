@@ -66,6 +66,7 @@ class LoraFinetune(FullParameterFinetune[H]):
     @override
     def run_attack(self) -> None:
         """Run lora fine-tuning attack and modify weights."""
+        self.attack_config.ensure_optimizer_available()
         prompt_completions_dataset = self.load_prompt_completions_dataset()
 
         training_arguments = SFTConfig(
@@ -77,6 +78,7 @@ class LoraFinetune(FullParameterFinetune[H]):
             lr_scheduler_type=self.attack_config.lr_scheduler_type,
             gradient_checkpointing=True,
             optim=self.attack_config.optim,
+            weight_decay=self.attack_config.weight_decay,
             logging_steps=1,
             save_strategy="no",
             completion_only_loss=True,

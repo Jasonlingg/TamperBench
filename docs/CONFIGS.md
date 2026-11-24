@@ -78,6 +78,63 @@ base:
 
 See individual config dataclasses in `src/tamperbench/whitebox/attacks/<attack>/` for all available parameters.
 
+### Optimizer Selection
+
+The `optim` field already selects the fine-tuning optimizer. Existing configs use
+`adamw_torch`; they keep their current behavior. Both `benchmark_grid.py` and
+`optuna_single.py` accept an optional `--optim` override:
+
+```bash
+python scripts/whitebox/benchmark_grid.py /path/to/checkpoint \
+    --attacks full_parameter_finetune --optim adamw_torch \
+    --model-alias adamw_baseline
+```
+
+Omitting the flag preserves the YAML selection. For Optuna, an explicit flag also
+removes `optim` from the search space so the sweep cannot override it. The selected
+optimizer is part of the config passed to the runner. Use separate model aliases
+or results directories for optimizer comparisons: existing checkpoint/result
+caching does not invalidate previous runs when an optimizer changes.
+
+#### Muon Configuration Sketch (Training Integration Pending)
+
+Muon settings are being added first for `full_parameter_finetune` and
+`benign_full_parameter_finetune`. Selecting `optim: muon` currently raises
+`NotImplementedError` before dataset/model loading; it does not train with a
+fallback optimizer. Parameter routing and trainer integration are the next step.
+
+```yaml
+optim: muon
+learning_rate: 0.00001       # Illustrative; tune independently from the AdamW baseline.
+weight_decay: 0.0
+muon_momentum: 0.95
+muon_nesterov: true
+muon_ns_steps: 5
+muon_adjust_lr_fn: match_rms_adamw
+adamw_learning_rate: null   # Planned: share learning_rate unless explicitly overridden.
+```
+
+The intended design routes eligible hidden weight matrices to Muon and routes
+embeddings, the output head, and other parameters to auxiliary AdamW. The default
+`match_rms_adamw` scaling follows the RMS-matching approach in
+[Muon is Scalable for LLM Training](https://arxiv.org/abs/2502.16982).
+The alternate scaling choice is `original`. Weight-decay grouping will be specified
+and tested with the optimizer implementation; the config alone does not reproduce
+the paper's training procedure.
+
+A small grid example lives in
+`configs/whitebox/attacks_muon/full_parameter_finetune/grid.yaml`. To select it:
+
+```bash
+python scripts/whitebox/benchmark_grid.py /path/to/checkpoint \
+    --attacks full_parameter_finetune \
+    --configs-dir configs/whitebox/attacks_muon --optim muon \
+    --model-alias muon_pilot
+```
+
+This command currently stops with the integration-pending error. The example is a
+configuration sketch, not a validated GPU experiment or an Optuna sweep directory.
+
 ### Evaluations
 
 The `evals` field specifies which evaluations to run after the attack completes:

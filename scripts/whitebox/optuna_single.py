@@ -21,6 +21,11 @@ from tamperbench.whitebox.utils.benchmark.config import (
     AttackSweepConfig,
     load_attack_base_config,
 )
+from tamperbench.whitebox.utils.benchmark.optimizer import (
+    add_optimizer_argument,
+    override_optimizer,
+    validate_optimizer_override,
+)
 from tamperbench.whitebox.utils.benchmark.path_generation import StudyPaths
 from tamperbench.whitebox.utils.benchmark.runners import run_optuna_sweep
 from tamperbench.whitebox.utils.benchmark.trial_manager import SweepTrialManager
@@ -132,7 +137,13 @@ def main() -> None:
         help="Random seed for reproducibility (used by attacks and Optuna sampler)",
     )
 
+    add_optimizer_argument(parser)
     args: Namespace = parser.parse_args()
+    optim = cast(str | None, args.optim)
+    try:
+        validate_optimizer_override(cast(list[AttackName], args.attacks), optim)
+    except ValueError as exc:
+        parser.error(str(exc))
     multiprocessing.set_start_method("spawn", force=True)
 
     config_root = cast(Path, args.configs_dir)
@@ -149,6 +160,13 @@ def main() -> None:
         sweep_config = AttackSweepConfig.from_yaml(
             config_root, attack_name, sweep_filename=ConfigPath.SINGLE_OBJECTIVE_SWEEP
         )
+        try:
+            base_attack_config = override_optimizer(base_attack_config, optim)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if optim is not None:
+            # An explicit CLI selection takes precedence over optimizer search choices.
+            sweep_config.sweep.pop("optim", None)
 
         study_paths = StudyPaths(
             results_dir=results_dir,

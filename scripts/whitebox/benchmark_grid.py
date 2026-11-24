@@ -15,6 +15,11 @@ from tamperbench.whitebox import (
 )
 from tamperbench.whitebox.utils import AttackName, ConfigPath
 from tamperbench.whitebox.utils.benchmark.io import yaml_to_dict
+from tamperbench.whitebox.utils.benchmark.optimizer import (
+    add_optimizer_argument,
+    override_optimizer,
+    validate_optimizer_override,
+)
 from tamperbench.whitebox.utils.benchmark.runners import run_attack_grid_configs
 
 REPO_ROOT = get_repo_root()
@@ -70,7 +75,13 @@ if __name__ == "__main__":
         help="Random seed for reproducibility",
     )
 
+    add_optimizer_argument(parser)
     args: Namespace = parser.parse_args()
+    optim = cast(str | None, args.optim)
+    try:
+        validate_optimizer_override(cast(list[AttackName], args.attacks), optim)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     config_root = args.configs_dir if args.configs_dir else WHITEBOX_ATTACK_CONFIG_DIR
     pretrained_model_path = cast(str, args.pretrained_model_path)
@@ -84,6 +95,14 @@ if __name__ == "__main__":
     whitebox_attack_config_grids: dict[AttackName, dict[str, Any]] = {
         attack_name: yaml_to_dict(Path(config_root, attack_name, ConfigPath.GRID_YAML)) for attack_name in args.attacks
     }
+
+    try:
+        whitebox_attack_config_grids = {
+            attack_name: {name: override_optimizer(config, optim) for name, config in grid.items()}
+            for attack_name, grid in whitebox_attack_config_grids.items()
+        }
+    except ValueError as exc:
+        parser.error(str(exc))
 
     for attack_name in args.attacks:
         run_attack_grid_configs(
