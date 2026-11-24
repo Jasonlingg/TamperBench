@@ -16,7 +16,7 @@ def add_optimizer_argument(parser: ArgumentParser) -> None:
         default=None,
         help=(
             "Override the YAML optimizer (e.g. adamw_torch or muon). "
-            "Muon currently has configuration support only; training integration is pending."
+            "Muon supports full_parameter_finetune and benign_full_parameter_finetune."
         ),
     )
 
@@ -25,7 +25,7 @@ def validate_optimizer_override(attack_names: Sequence[AttackName], optim: str |
     """Check Muon attack selection before launching any experiments.
 
     Raises:
-        ValueError: If Muon is requested for an attack outside the initial full-finetuning scope.
+        ValueError: If Muon is requested for an attack outside the full-finetuning scope.
     """
     if optim != "muon":
         return
@@ -34,7 +34,7 @@ def validate_optimizer_override(attack_names: Sequence[AttackName], optim: str |
     unsupported = [str(name) for name in attack_names if name not in supported]
     if unsupported:
         raise ValueError(
-            "Muon is planned for full-parameter fine-tuning only; unsupported attacks: " + ", ".join(unsupported)
+            "Muon supports full-parameter fine-tuning only; unsupported attacks: " + ", ".join(unsupported)
         )
 
 

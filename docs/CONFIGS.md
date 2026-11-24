@@ -96,12 +96,11 @@ optimizer is part of the config passed to the runner. Use separate model aliases
 or results directories for optimizer comparisons: existing checkpoint/result
 caching does not invalidate previous runs when an optimizer changes.
 
-#### Muon Configuration Sketch (Training Integration Pending)
+#### Muon for Full-Parameter Fine-Tuning
 
-Muon settings are being added first for `full_parameter_finetune` and
-`benign_full_parameter_finetune`. Selecting `optim: muon` currently raises
-`NotImplementedError` before dataset/model loading; it does not train with a
-fallback optimizer. Parameter routing and trainer integration are the next step.
+`optim: muon` selects native `torch.optim.Muon` with auxiliary AdamW for
+`full_parameter_finetune` and `benign_full_parameter_finetune`. Other optimizers
+continue to use the existing SFTTrainer optimizer setup. LoRA rejects Muon.
 
 ```yaml
 optim: muon
@@ -111,16 +110,29 @@ muon_momentum: 0.95
 muon_nesterov: true
 muon_ns_steps: 5
 muon_adjust_lr_fn: match_rms_adamw
-adamw_learning_rate: null   # Planned: share learning_rate unless explicitly overridden.
+adamw_learning_rate: null   # Share learning_rate unless explicitly overridden.
 ```
 
-The intended design routes eligible hidden weight matrices to Muon and routes
-embeddings, the output head, and other parameters to auxiliary AdamW. The default
+Weights of hidden `torch.nn.Linear` and Hugging Face `Conv1D` modules go to Muon.
+Embedding modules, the output head, biases, normalization weights, and other
+parameters go to AdamW. Embedding/output identities take precedence when weights
+are tied; frozen parameters are excluded and shared weights are included once.
+Unrecognized module types conservatively use AdamW. Models without any eligible
+hidden matrix raise an error. The default
 `match_rms_adamw` scaling follows the RMS-matching approach in
 [Muon is Scalable for LLM Training](https://arxiv.org/abs/2502.16982).
-The alternate scaling choice is `original`. Weight-decay grouping will be specified
-and tested with the optimizer implementation; the config alone does not reproduce
-the paper's training procedure.
+The alternate scaling choice is `original`. Both optimizers use the trainer's
+existing weight-decay exclusions, including biases and normalization parameters.
+This differs from the paper's treatment of normalization weights; this integration
+does not claim to reproduce its training procedure.
+
+The optimizer is constructed after SFTTrainer places the model on its training
+device. A combined optimizer exposes both algorithms to the trainer's scheduler,
+gradient clearing, and optimizer-state serialization. An explicit auxiliary
+AdamW learning rate retains its ratio under the scheduler. Because the pinned
+Transformers optimizer enum lacks Muon, SFTConfig uses the `adamw_torch` enum
+value while the worker installs the actual combined optimizer before training.
+The experiment's `optim: muon` field records the selected algorithm.
 
 A small grid example lives in
 `configs/whitebox/attacks_muon/full_parameter_finetune/grid.yaml`. To select it:
@@ -132,8 +144,17 @@ python scripts/whitebox/benchmark_grid.py /path/to/checkpoint \
     --model-alias muon_pilot
 ```
 
-This command currently stops with the integration-pending error. The example is a
-configuration sketch, not a validated GPU experiment or an Optuna sweep directory.
+This example is a small pilot configuration, not a tuned research experiment or
+an Optuna sweep directory. The existing attack loader uses BF16 model weights;
+use a compatible CUDA GPU for realistic experiments. Tiny CPU runs have validated
+the optimizer and training worker, but CUDA performance and safety/capability
+comparisons remain to be measured. Full fine-tuning uses the same CPU selection
+as LoRA when CUDA is unavailable.
+
+This integration targets unsharded training. FSDP and DeepSpeed are rejected;
+distributed execution has not been validated. The optimizer can serialize and
+restore its state, but the attack runner still saves only the final model with
+`save_strategy="no"`; automatic interrupted-attack recovery is not added here.
 
 ### Evaluations
 

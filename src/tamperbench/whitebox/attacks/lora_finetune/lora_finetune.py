@@ -66,7 +66,8 @@ class LoraFinetune(FullParameterFinetune[H]):
     @override
     def run_attack(self) -> None:
         """Run lora fine-tuning attack and modify weights."""
-        self.attack_config.ensure_optimizer_available()
+        if self.attack_config.optim == "muon":
+            raise ValueError("Muon is currently supported for full-parameter fine-tuning only, not LoRA.")
         prompt_completions_dataset = self.load_prompt_completions_dataset()
 
         training_arguments = SFTConfig(

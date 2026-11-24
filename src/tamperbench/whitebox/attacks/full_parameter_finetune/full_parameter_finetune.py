@@ -1,5 +1,6 @@
 """Full parameter fine-tuning attack interface."""
 
+import logging
 import multiprocessing
 from dataclasses import dataclass
 from math import isfinite
@@ -25,6 +26,9 @@ from tamperbench.whitebox.utils.models.default_tokens import DEFAULT_PAD_TOKEN
 from tamperbench.whitebox.utils.models.templates import load_and_configure_tokenizer
 from tamperbench.whitebox.utils.names import AttackName
 from tamperbench.whitebox.utils.ops import dealloc_model_and_tokenizer, run_in_isolation
+from tamperbench.whitebox.utils.optimizers.muon import build_muon_optimizer
+
+logger = logging.getLogger(__name__)
 
 H = TypeVar(name="H", bound="FullParameterFinetuneConfig")
 
@@ -102,14 +106,6 @@ class FullParameterFinetuneConfig(TamperAttackConfig):
         ):
             raise ValueError("adamw_learning_rate must be None or finite and positive.")
 
-    def ensure_optimizer_available(self) -> None:
-        """Reject Muon training until parameter routing and trainer integration are implemented."""
-        if self.optim == "muon":
-            raise NotImplementedError(
-                "Muon configuration is available, but parameter routing and SFTTrainer integration "
-                "are not implemented yet. Use optim='adamw_torch' to train."
-            )
-
 
 @register_attack(AttackName.FULL_PARAMETER_FINETUNE, FullParameterFinetuneConfig)
 class FullParameterFinetune(TamperAttack[H]):
@@ -120,7 +116,6 @@ class FullParameterFinetune(TamperAttack[H]):
     @override
     def run_attack(self) -> None:
         """Run full parameter fine-tuning attack and modify weights."""
-        self.attack_config.ensure_optimizer_available()
         prompt_completions_dataset = self.load_prompt_completions_dataset()
         training_arguments = SFTConfig(
             output_dir=self.attack_config.out_dir,
@@ -133,7 +128,9 @@ class FullParameterFinetune(TamperAttack[H]):
             warmup_ratio=self.attack_config.warmup_ratio,
             gradient_accumulation_steps=self.attack_config.gradient_accumulation_steps,
             gradient_checkpointing=True,
-            optim=self.attack_config.optim,
+            # Transformers' optimizer enum does not include Muon in the pinned
+            # version. The worker installs our custom optimizer before train().
+            optim="adamw_torch" if self.attack_config.optim == "muon" else self.attack_config.optim,
             weight_decay=self.attack_config.weight_decay,
             logging_steps=1,
             save_strategy="no",
@@ -141,6 +138,7 @@ class FullParameterFinetune(TamperAttack[H]):
             completion_only_loss=True,
             max_length=2048,
             seed=self.attack_config.random_seed,
+            use_cpu=not torch.cuda.is_available(),
         )
 
         run_in_isolation(
@@ -297,6 +295,33 @@ def run_full_finetune_attack(  # TODO: Consolidate with `run_lora_attack`
         train_dataset=prompt_completions_dataset,
         args=training_arguments,
     )
+
+    if attack_config.optim == "muon":
+        if trainer.is_fsdp_enabled or trainer.is_deepspeed_enabled:
+            raise ValueError("Muon integration currently supports unsharded training, not FSDP or DeepSpeed.")
+        # Trainer has already placed the model on its training device. Build the
+        # optimizer here so it references the final model parameters.
+        trainer.optimizer = build_muon_optimizer(
+            model,
+            decay_parameter_names=set(trainer.get_decay_parameter_names(model)),
+            learning_rate=attack_config.learning_rate,
+            weight_decay=attack_config.weight_decay,
+            momentum=attack_config.muon_momentum,
+            nesterov=attack_config.muon_nesterov,
+            ns_steps=attack_config.muon_ns_steps,
+            adjust_lr_fn=attack_config.muon_adjust_lr_fn,
+            adamw_learning_rate=attack_config.adamw_learning_rate,
+            adamw_betas=(training_arguments.adam_beta1, training_arguments.adam_beta2),
+            adamw_eps=training_arguments.adam_epsilon,
+        )
+        for group in trainer.optimizer.param_groups:
+            logger.info(
+                "%s optimizer group: %d parameters, lr=%g, weight_decay=%g",
+                group["optimizer_type"],
+                sum(param.numel() for param in group["params"]),
+                group["lr"],
+                group["weight_decay"],
+            )
 
     trainer.train()
     trainer.save_model(output_dir=output_checkpoint_path)

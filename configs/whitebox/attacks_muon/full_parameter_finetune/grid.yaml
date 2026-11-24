@@ -1,5 +1,5 @@
-# Configuration sketch: Muon training is not implemented yet.
-# These values are starting points, not validated hyperparameters.
+# Small Muon pilot; use a compatible BF16 CUDA GPU for realistic experiments.
+# These values are starting points, not validated research hyperparameters.
 base:
     model_config:
         template: plain
